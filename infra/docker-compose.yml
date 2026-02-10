@@ -1,5 +1,3 @@
-version: "3.9"
-
 networks:
   web:
     name: web
@@ -25,6 +23,8 @@ services:
       # Сертификаты и webroot для Let's Encrypt
       - ../letsencrypt/etc:/etc/letsencrypt:ro
       - ../letsencrypt/www:/var/www/letsencrypt:ro
+    depends_on:
+      - certbot
 
   certbot:
     image: certbot/certbot
@@ -35,6 +35,8 @@ services:
       - ../letsencrypt/lib:/var/lib/letsencrypt
       - ../letsencrypt/logs:/var/log/letsencrypt
       - ../letsencrypt/www:/var/www/letsencrypt
+    networks:
+      - web
 
   ssh:
     image: lscr.io/linuxserver/openssh-server:latest
@@ -46,11 +48,26 @@ services:
       - TZ=Etc/UTC
       - SUDO_ACCESS=false
       - PASSWORD_ACCESS=true
-      - USER_NAME=admin            # основной админ-пользователь (можно поменять)
-      - USER_PASSWORD=changeme     # пароль для admin (поменять перед продом)
+      - USER_NAME=admin
+      - USER_PASSWORD=changeme
     volumes:
       - ../sites:/srv/sites:rw
       - ../ssh/config:/config
     ports:
       - "2222:2222"
 
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: hosting_portainer
+    restart: unless-stopped
+    ports:
+      - "9443:9443"
+      - "9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - portainer_data:/data
+    networks:
+      - web
+
+volumes:
+  portainer_data:

@@ -24,6 +24,13 @@
   - Имеет volume `../sites:/srv/sites:rw`, чтобы пользователи видели свои каталоги сайтов.
   - Пользователи создаются скриптом `scripts/create_site.sh` (команда `docker exec`), их `home` указывает на `/srv/sites/<домен>`.
 
+- **`portainer` (контейнер `hosting_portainer`)**
+  - Web-интерфейс для управления Docker.
+  - Слушает порты **9443** (HTTPS) и **9000** (HTTP) на хосте.
+  - Имеет доступ к Docker socket (`/var/run/docker.sock`) для управления контейнерами.
+  - Позволяет мониторить статусы контейнеров, просматривать логи, запускать/останавливать сервисы.
+  - Первичный вход: `https://<IP_сервера>:9443/` (потребуется создать пароль администратора при первом входе).
+
 - **`php_*` (по одному контейнеру на сайт, например `php_example_com`)**
   - Запускаются из `sites/<домен>/docker-compose.yml`.
   - Работают в сети `web` и принимают FastCGI-запросы на порту `9000`.
@@ -48,6 +55,8 @@
   - `80/tcp` → `nginx` (HTTP).
   - `443/tcp` → `nginx` (HTTPS).
   - `2222/tcp` → `hosting_ssh` (SSH-доступ клиентам).
+  - `9443/tcp` → `hosting_portainer` (Web UI HTTPS).
+  - `9000/tcp` → `hosting_portainer` (Web UI HTTP, опционально).
 
 - **Volumes (общие данные)**
   - `../sites:/var/www` в nginx:
@@ -55,6 +64,9 @@
     - используется как `root` для сайтов и место для логов.
   - `../sites:/srv/sites` в `hosting_ssh`:
     - каждый пользователь получает `home = /srv/sites/<домен>`.
+  - `/var/run/docker.sock` в `hosting_portainer`:
+    - позволяет Portainer управлять Docker-демоном.
+  - `portainer_data` — именованный volume для хранения настроек Portainer.
   - `../letsencrypt/etc`, `../letsencrypt/lib`, `../letsencrypt/logs`, `../letsencrypt/www`:
     - разделены между `nginx` и `certbot` для выдачи/обновления сертификатов.
 

@@ -1,0 +1,498 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+##
+## Интерактивный скрипт создания сайта
+##
+## Использование:
+##   ./scripts/create_site.sh [домен]
+##
+## Если домен не указан, скрипт запросит его интерактивно.
+##
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$ROOT_DIR/infra"
+
+# Цвета для вывода
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Функция нормализации имени для контейнера/пользователя
+normalize_username() {
+  local s="$1"
+  # заменить всё, кроме [a-zA-Z0-9] на _
+  s="${s//[^a-zA-Z0-9]/_}"
+  # обрезать до 32 символов
+  echo "${s:0:32}"
+}
+
+# Функция генерации случайного пароля
+generate_password() {
+  tr -dc 'A-Za-z0-9!@#$%^&*=' </dev/urandom | head -c 16 || true
+}
+
+# Функция проверки валидности домена
+validate_domain() {
+  local domain="$1"
+  if [[ "$domain" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*$ ]]; then
+    return 0
+  fi
+  return 1
+}
+
+# Функция проверки доступности Docker
+check_docker() {
+  if ! command -v docker &> /dev/null; then
+    echo -e "${RED}Ошибка: Docker не установлен${NC}" >&2
+    exit 1
+  fi
+  
+  if ! docker ps &> /dev/null; then
+    echo -e "${RED}Ошибка: нет прав доступа к Docker. Запустите с sudo.${NC}" >&2
+    exit 1
+  fi
+}
+
+# Функция проверки запущена ли инфраструктура
+check_infra() {
+  if ! docker ps --format '{{.Names}}' | grep -q '^hosting_nginx$'; then
+    echo -e "${YELLOW}Внимание: инфраструктура не запущена.${NC}"
+    echo "Запустите её командой: sudo ./infra/start.sh"
+    echo
+    read -p "Запустить сейчас? [y/N] " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+      cd "$ROOT_DIR/infra"
+      ./start.sh
+      cd "$ROOT_DIR"
+    else
+      echo -e "${RED}Без инфраструктуры создание сайта невозможно.${NC}"
+      exit 1
+    fi
+  fi
+}
+
+echo -e "${BLUE}========================================"
+echo "  Создание нового сайта"
+echo -e "========================================${NC}"
+echo
+
+# Проверка Docker
+check_docker
+
+# Запрос домена
+if [[ $# -ge 1 ]]; then
+  SITE_DOMAIN="$1"
+else
+  read -p "Введите домен сайта (например, example.com): " SITE_DOMAIN
+fi
+
+# Валидация домена
+if ! validate_domain "$SITE_DOMAIN"; then
+  echo -e "${RED}Ошибка: некорректный домен '$SITE_DOMAIN'${NC}" >&2
+  exit 1
+fi
+
+SITE_DIR="$ROOT_DIR/sites/$SITE_DOMAIN"
+PHP_CONF_DIR="$ROOT_DIR/config/php-fpm/$SITE_DOMAIN"
+NGINX_VHOST="$ROOT_DIR/config/nginx/conf.d/$SITE_DOMAIN.conf"
+
+# Проверка существования сайта
+if [[ -d "$SITE_DIR" ]]; then
+  echo -e "${RED}Ошибка: сайт '$SITE_DOMAIN' уже существует.${NC}" >&2
+  echo "Директория: $SITE_DIR"
+  exit 1
+fi
+
+# Проверка инфраструктуры
+check_infra
+
+# Генерация имени пользователя по умолчанию
+DEFAULT_USER=$(normalize_username "$SITE_DOMAIN")
+
+echo
+echo -e "${YELLOW}Настройка SSH-доступа:${NC}"
+
+# Запрос логина пользователя
+read -p "Логин SSH-пользователя [$DEFAULT_USER]: " SITE_USER
+SITE_USER="${SITE_USER:-$DEFAULT_USER}"
+
+# Запрос пароля
+echo
+echo -e "Выберите способ задания пароля:"
+echo "  1) Сгенерировать автоматически"
+echo "  2) Ввести вручную"
+echo "  3) Без пароля (только по ключам)"
+read -p "Ваш выбор [1]: " PASSWORD_CHOICE
+PASSWORD_CHOICE="${PASSWORD_CHOICE:-1}"
+
+case "$PASSWORD_CHOICE" in
+  1)
+    PASSWORD=$(generate_password)
+    echo -e "Сгенерированный пароль: ${GREEN}$PASSWORD${NC}"
+    ;;
+  2)
+    while true; do
+      read -s -p "Введите пароль: " PASSWORD
+      echo
+      read -s -p "Повторите пароль: " PASSWORD_CONFIRM
+      echo
+      if [[ "$PASSWORD" == "$PASSWORD_CONFIRM" ]]; then
+        break
+      fi
+      echo -e "${RED}Пароли не совпадают. Попробуйте снова.${NC}"
+    done
+    ;;
+  3)
+    PASSWORD=""
+    echo -e "${YELLOW}Пароль не будет установлен. Доступ только по SSH-ключам.${NC}"
+    ;;
+  *)
+    echo -e "${RED}Неверный выбор. Использую автоматическую генерацию.${NC}"
+    PASSWORD=$(generate_password)
+    echo -e "Сгенерированный пароль: ${GREEN}$PASSWORD${NC}"
+    ;;
+esac
+
+# Выбор версии PHP
+echo
+echo -e "${YELLOW}Выбор версии PHP:${NC}"
+echo "  1) PHP 8.2 (рекомендуется)"
+echo "  2) PHP 8.1"
+echo "  3) PHP 8.0"
+echo "  4) PHP 7.4"
+read -p "Ваш выбор [1]: " PHP_CHOICE
+PHP_CHOICE="${PHP_CHOICE:-1}"
+
+case "$PHP_CHOICE" in
+  1) PHP_VERSION="8.2" ;;
+  2) PHP_VERSION="8.1" ;;
+  3) PHP_VERSION="8.0" ;;
+  4) PHP_VERSION="7.4" ;;
+  *) PHP_VERSION="8.2" ;;
+esac
+
+echo
+echo -e "${BLUE}========================================${NC}"
+echo -e "${BLUE}Параметры создания сайта:${NC}"
+echo -e "  Домен:          ${GREEN}$SITE_DOMAIN${NC}"
+echo -e "  PHP:            ${GREEN}$PHP_VERSION${NC}"
+echo -e "  SSH логин:      ${GREEN}$SITE_USER${NC}"
+if [[ -n "$PASSWORD" ]]; then
+  echo -e "  SSH пароль:     ${GREEN}$PASSWORD${NC}"
+else
+  echo -e "  SSH пароль:     ${YELLOW}не установлен${NC}"
+fi
+echo -e "${BLUE}========================================${NC}"
+echo
+
+read -p "Продолжить создание? [Y/n] " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Nn]$ ]]; then
+  echo "Отменено."
+  exit 0
+fi
+
+# ========================================
+# Создание сайта
+# ========================================
+
+SITE_CONTAINER_NAME="php_$(normalize_username "$SITE_DOMAIN")"
+
+echo
+echo -e "${YELLOW}==> Создание директорий...${NC}"
+mkdir -p "$SITE_DIR/www" "$SITE_DIR/logs"
+mkdir -p "$PHP_CONF_DIR"
+
+echo -e "${YELLOW}==> Копирование конфигов PHP-FPM и docker-compose из шаблонов...${NC}"
+cp "$ROOT_DIR/templates/php-fpm/php.ini" "$PHP_CONF_DIR/php.ini"
+cp "$ROOT_DIR/templates/php-fpm/www.conf" "$PHP_CONF_DIR/www.conf"
+cp "$ROOT_DIR/templates/site/docker-compose.yml" "$SITE_DIR/docker-compose.yml"
+
+echo -e "${YELLOW}==> Создание HTTP-only конфига nginx...${NC}"
+# Создаём HTTP-only конфиг (SSL добавим после получения сертификата)
+cat > "$NGINX_VHOST" << NGINX
+server {
+    listen 80;
+    server_name $SITE_DOMAIN;
+    root /var/www/$SITE_DOMAIN/www;
+    index index.php index.html;
+
+    # ACME-challenge для Let's Encrypt
+    location /.well-known/acme-challenge/ {
+        root /var/www/letsencrypt;
+    }
+
+    access_log /var/www/$SITE_DOMAIN/logs/access.log;
+    error_log /var/www/$SITE_DOMAIN/logs/error.log;
+
+    location / {
+        try_files \$uri \$uri/ /index.php?\$query_string;
+    }
+
+    location ~ \\.php\$ {
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        fastcgi_pass $SITE_CONTAINER_NAME:9000;
+    }
+}
+NGINX
+
+echo -e "${YELLOW}==> Настройка конфигов docker-compose...${NC}"
+# Заменяем плейсхолдеры в docker-compose.yml
+sed -i "s/{{DOMAIN}}/$SITE_DOMAIN/g" "$SITE_DIR/docker-compose.yml"
+sed -i "s/{{CONTAINER_NAME}}/$SITE_CONTAINER_NAME/g" "$SITE_DIR/docker-compose.yml"
+sed -i "s/{{PHP_VERSION}}/$PHP_VERSION/g" "$SITE_DIR/docker-compose.yml"
+# Заменяем версию PHP
+sed -i "s/php:8\.2-fpm/php:${PHP_VERSION}-fpm/g" "$SITE_DIR/docker-compose.yml"
+
+echo -e "${YELLOW}==> Создание приветственной страницы...${NC}"
+cat > "$SITE_DIR/www/index.php" << PHP
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>$SITE_DOMAIN</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .container {
+            background: white;
+            border-radius: 16px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .domain {
+            color: #667eea;
+            font-size: 1.5em;
+        }
+        .info {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 20px;
+        }
+        .info dt {
+            font-weight: bold;
+            color: #555;
+            margin-top: 10px;
+        }
+        .info dd {
+            margin-left: 0;
+            color: #333;
+        }
+        .success {
+            color: #28a745;
+            font-size: 1.2em;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            color: #666;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎉 Сайт успешно создан!</h1>
+        <p class="domain">$SITE_DOMAIN</p>
+        
+        <p class="success">✓ Сервер настроен и работает</p>
+        
+        <div class="info">
+            <dl>
+                <dt>PHP версия:</dt>
+                <dd><?php echo PHP_VERSION; ?></dd>
+                
+                <dt>Документальный корень:</dt>
+                <dd>/var/www/html</dd>
+                
+                <dt>Дата создания:</dt>
+                <dd><?php echo date('d.m.Y H:i'); ?></dd>
+            </dl>
+        </div>
+        
+        <div class="footer">
+            <p>Замените этот файл на свой сайт</p>
+            <p><small>hosting4 — Docker-хостинг</small></p>
+        </div>
+    </div>
+</body>
+</html>
+PHP
+
+echo -e "${YELLOW}==> Запуск PHP-контейнера...${NC}"
+cd "$SITE_DIR"
+docker compose up -d
+
+echo -e "${YELLOW}==> Перезапуск nginx...${NC}"
+cd "$ROOT_DIR/infra"
+docker compose restart nginx
+NGINX_STATUS="${GREEN}Перезапущен${NC}"
+
+# Создание SSH-пользователя
+echo -e "${YELLOW}==> Создание SSH-пользователя...${NC}"
+if docker ps --format '{{.Names}}' | grep -q '^hosting_ssh$'; then
+  SITE_DIR_IN_CONTAINER="/srv/sites/$SITE_DOMAIN"
+  
+  docker exec hosting_ssh bash -lc "
+    id '$SITE_USER' >/dev/null 2>&1 || useradd -d '$SITE_DIR_IN_CONTAINER' -M -s /bin/bash '$SITE_USER'
+  "
+  
+  if [[ -n "$PASSWORD" ]]; then
+    docker exec hosting_ssh bash -lc "
+      echo '$SITE_USER:$PASSWORD' | chpasswd
+    "
+  fi
+  
+  SSH_STATUS="${GREEN}Создан${NC}"
+else
+  SSH_STATUS="${RED}Контейнер SSH не запущен${NC}"
+fi
+
+# ========================================
+# Получение SSL-сертификата
+# ========================================
+
+echo
+echo -e "${YELLOW}==> Проверка DNS и получение SSL-сертификата...${NC}"
+
+# Проверка DNS
+SERVER_IP=$(curl -s ifconfig.me || curl -s icanhazip.com || echo "unknown")
+DOMAIN_IP=$(dig +short "$SITE_DOMAIN" A | tail -1 || true)
+
+if [[ -z "$DOMAIN_IP" ]]; then
+  echo -e "${RED}DNS-запись для $SITE_DOMAIN не найдена.${NC}"
+  echo "Создайте A-запись: $SITE_DOMAIN → $SERVER_IP"
+  SSL_STATUS="${YELLOW}Отложено (нет DNS)${NC}"
+elif [[ "$DOMAIN_IP" != "$SERVER_IP" ]]; then
+  echo -e "${YELLOW}DNS указывает на другой IP: $DOMAIN_IP (сервер: $SERVER_IP)${NC}"
+  SSL_STATUS="${YELLOW}Отложено (DNS не указывает на сервер)${NC}"
+else
+  echo -e "${GREEN}DNS корректен: $SITE_DOMAIN → $DOMAIN_IP${NC}"
+  
+  # Запрос email для Let's Encrypt
+  echo
+  read -p "Введите email для Let's Encrypt: " CERT_EMAIL
+  
+  if [[ -n "$CERT_EMAIL" ]]; then
+    echo "Получение сертификата..."
+    
+    cd "$ROOT_DIR/infra"
+    if docker compose run --rm certbot certonly \
+      --webroot -w /var/www/letsencrypt \
+      -d "$SITE_DOMAIN" \
+      --email "$CERT_EMAIL" \
+      --agree-tos \
+      --no-eff-email 2>&1; then
+      
+      echo -e "${GREEN}Сертификат успешно получен!${NC}"
+      
+      # Обновляем конфиг добавляя HTTPS
+      echo -e "${YELLOW}==> Обновление конфига nginx с HTTPS...${NC}"
+      cat > "$NGINX_VHOST" << NGINX
+server {
+   listen 80;
+   server_name $SITE_DOMAIN;
+   root $SITE_DIR/www;
+   index index.php index.html;
+
+   # ACME-challenge для Let's Encrypt
+   location /.well-known/acme-challenge/ {
+       root /var/www/letsencrypt;
+   }
+
+   # Редирект на HTTPS
+   location / {
+       return 301 https://\$host\$request_uri;
+   }
+}
+
+server {
+   listen 443 ssl http2;
+   server_name $SITE_DOMAIN;
+
+   ssl_certificate /etc/letsencrypt/live/$SITE_DOMAIN/fullchain.pem;
+   ssl_certificate_key /etc/letsencrypt/live/$SITE_DOMAIN/privkey.pem;
+   ssl_protocols TLSv1.2 TLSv1.3;
+   ssl_prefer_server_ciphers on;
+
+   root $SITE_DIR/www;
+   index index.php index.html;
+
+   access_log $SITE_DIR/logs/access.log;
+   error_log $SITE_DIR/logs/error.log;
+
+   location / {
+       try_files \$uri \$uri/ /index.php?\$query_string;
+   }
+
+   location ~ \\.php\$ {
+       include fastcgi_params;
+       fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+       fastcgi_pass $SITE_CONTAINER_NAME:9000;
+   }
+}
+NGINX
+      
+      docker compose restart nginx
+      SSL_STATUS="${GREEN}Получен${NC}"
+    else
+      echo -e "${RED}Не удалось получить сертификат.${NC}"
+      echo "Возможно, DNS ещё не обновился. Попробуйте позже:"
+      echo "  cd infra && docker compose run --rm certbot certonly --webroot -w /var/www/letsencrypt -d $SITE_DOMAIN --email $CERT_EMAIL --agree-tos"
+      SSL_STATUS="${RED}Ошибка${NC}"
+    fi
+  else
+    SSL_STATUS="${YELLOW}Пропущено${NC}"
+  fi
+fi
+
+# ========================================
+# Итоговый вывод
+# ========================================
+
+echo
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}  Сайт успешно создан!${NC}"
+echo -e "${GREEN}========================================${NC}"
+echo
+echo -e "  Домен:        ${GREEN}$SITE_DOMAIN${NC}"
+echo -e "  PHP:          ${GREEN}$PHP_VERSION${NC}"
+echo -e "  Контейнер:    ${GREEN}$SITE_CONTAINER_NAME${NC}"
+echo -e "  SSL:          $SSL_STATUS"
+echo
+echo -e "${YELLOW}SSH-доступ:${NC}"
+echo -e "  Хост:         ${GREEN}<IP_сервера>${NC}"
+echo -e "  Порт:         ${GREEN}2222${NC}"
+echo -e "  Логин:        ${GREEN}$SITE_USER${NC}"
+if [[ -n "$PASSWORD" ]]; then
+  echo -e "  Пароль:       ${GREEN}$PASSWORD${NC}"
+else
+  echo -e "  Пароль:       ${YELLOW}не установлен (только по ключам)${NC}"
+fi
+echo
+echo -e "${YELLOW}Файлы сайта:${NC}"
+echo "  $SITE_DIR/www/"
+echo
+echo -e "${YELLOW}URL сайта:${NC}"
+echo "  http://$SITE_DOMAIN/"
+if [[ "$SSL_STATUS" == "${GREEN}Получен${NC}" ]]; then
+  echo "  https://$SITE_DOMAIN/"
+fi
+echo

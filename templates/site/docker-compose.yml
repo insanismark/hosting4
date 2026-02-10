@@ -1,0 +1,17 @@
+services:
+  php:
+    image: php:{{PHP_VERSION}}-fpm
+    container_name: {{CONTAINER_NAME}}
+    restart: unless-stopped
+    working_dir: /var/www
+    volumes:
+      - ./www:/var/www:rw
+      - ./logs:/var/www/logs:rw
+      - ../../config/php-fpm/{{DOMAIN}}/php.ini:/usr/local/etc/php/php.ini:ro
+      - ../../config/php-fpm/{{DOMAIN}}/www.conf:/usr/local/etc/php-fpm.d/www.conf:ro
+    networks:
+      - web
+
+networks:
+  web:
+    external: true

@@ -3,6 +3,17 @@
 # Let's Encrypt сертификаты и рабочие директории
 letsencrypt/
 
+# Рабочие сайты (кроме example.com)
+sites/*
+!sites/.gitkeep
+config/php-fpm/*
+!config/php-fpm/.gitkeep
+config/nginx/conf.d/*
+!config/nginx/conf.d/.gitkeep
+
+# SSH конфиги и ключи
+ssh/
+
 # Логи
 *.log
 sites/*/logs/
