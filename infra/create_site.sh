@@ -62,6 +62,7 @@ check_infra() {
     echo -e "${YELLOW}Внимание: инфраструктура не запущена.${NC}"
     echo "Запустите её командой: sudo ./infra/start.sh"
     echo
+
     read -p "Запустить сейчас? [y/N] " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -251,6 +252,8 @@ chmod 666 "$SITE_DIR/logs/access.log" "$SITE_DIR/logs/error.log"
 echo -e "${YELLOW}==> Копирование конфигов PHP-FPM из шаблонов...${NC}"
 cp "$ROOT_DIR/templates/php-fpm/php.ini" "$PHP_CONF_DIR/php.ini"
 cp "$ROOT_DIR/templates/php-fpm/www.conf" "$PHP_CONF_DIR/www.conf"
+# Replace {{DOMAIN}} placeholder in www.conf
+sed -i "s/{{DOMAIN}}/$SITE_DOMAIN/g" "$PHP_CONF_DIR/www.conf"
 
 echo -e "${YELLOW}==> Создание конфига nginx из шаблона...${NC}"
 # Копируем шаблон и заменяем плейсхолдеры
@@ -336,7 +339,7 @@ cat > "$SITE_DIR/www/index.php" << PHP
                 <dd><?php echo PHP_VERSION; ?></dd>
                 
                 <dt>Документальный корень:</dt>
-                <dd>/var/www/html</dd>
+                <dd>/var/www/$SITE_DOMAIN/www</dd>
                 
                 <dt>Дата создания:</dt>
                 <dd><?php echo date('d.m.Y H:i'); ?></dd>
@@ -460,7 +463,7 @@ server {
        try_files \$uri \$uri/ /index.php?\$query_string;
    }
 
-   location ~ \\.php\$ {
+   location ~ \.php\$ {
        include fastcgi_params;
        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
        fastcgi_pass $SITE_CONTAINER_NAME:9000;
@@ -495,18 +498,11 @@ echo -e "  PHP:          ${GREEN}$PHP_VERSION${NC}"
 echo -e "  Контейнер:    ${GREEN}$SITE_CONTAINER_NAME${NC}"
 echo -e "  SSL:          $SSL_STATUS"
 echo
+
 echo -e "${YELLOW}SSH-доступ:${NC}"
 echo -e "  Хост:         ${GREEN}<IP_сервера>${NC}"
 echo -e "  Порт:         ${GREEN}2222${NC}"
 echo -e "  Логин:        ${GREEN}$SITE_USER${NC}"
 if [[ -n "$PASSWORD" ]]; then
   echo -e "  Пароль:       ${GREEN}$PASSWORD${NC}"
-else
-  echo -e "  Пароль:       ${YELLOW}не установлен (только по ключам)${NC}"
 fi
-echo
-echo -e "${YELLOW}Файлы сайта:${NC}"
-echo "  $SITE_DIR/www/"
-echo
-echo -e "${YELLOW}URL сайта:${NC}"
-echo "  http://$SITE_DOMAIN/"

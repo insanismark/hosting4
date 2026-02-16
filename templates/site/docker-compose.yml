@@ -1,14 +1,14 @@
 services:
   php:
-    image: php:${PHP_VERSION:-8.2}-fpm
-    container_name: ${CONTAINER_NAME:-php_example_com}
+    image: php:{{PHP_VERSION}}-fpm
+    container_name: {{CONTAINER_NAME}}
     restart: unless-stopped
-    working_dir: /var/www/${DOMAIN:-example.com}
+    working_dir: /var/www/{{DOMAIN}}
     volumes:
-      - ./www:/var/www/${DOMAIN:-example.com}/www:rw
-      - ./logs:/var/www/${DOMAIN:-example.com}/logs:rw
-      - ../../config/php-fpm/${DOMAIN:-example.com}/php.ini:/usr/local/etc/php/php.ini:ro
-      - ../../config/php-fpm/${DOMAIN:-example.com}/www.conf:/usr/local/etc/php-fpm.d/www.conf:ro
+      - ./www:/var/www/{{DOMAIN}}/www:rw
+      - ./logs:/var/www/{{DOMAIN}}/logs:rw
+      - ../../config/php-fpm/{{DOMAIN}}/php.ini:/usr/local/etc/php/php.ini:ro
+      - ../../config/php-fpm/{{DOMAIN}}/www.conf:/usr/local/etc/php-fpm.d/www.conf:ro
     networks:
       - web
 

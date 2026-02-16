@@ -1,10 +1,10 @@
-# ${DOMAIN} - HTTP only
+# {{DOMAIN}} - HTTP only
 # HTTPS will be added after certbot certificate generation
 
 server {
     listen 80;
-    server_name ${DOMAIN};
-    root /var/www/${DOMAIN}/www;
+    server_name {{DOMAIN}};
+    root /var/www/{{DOMAIN}}/www;
     index index.php index.html;
 
     # ACME challenge for Let's Encrypt
@@ -12,8 +12,8 @@ server {
         root /var/www/letsencrypt;
     }
 
-    access_log /var/www/${DOMAIN}/logs/access.log;
-    error_log /var/www/${DOMAIN}/logs/error.log;
+    access_log /var/www/{{DOMAIN}}/logs/access.log;
+    error_log /var/www/{{DOMAIN}}/logs/error.log;
 
     location / {
         try_files $uri $uri/ /index.php?$query_string;
@@ -22,6 +22,6 @@ server {
     location ~ \.php$ {
         include fastcgi_params;
         fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
-        fastcgi_pass ${CONTAINER_NAME}:9000;
+        fastcgi_pass {{CONTAINER_NAME}}:9000;
     }
 }
