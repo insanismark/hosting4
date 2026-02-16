@@ -16,8 +16,8 @@ services:
     volumes:
       # Основной конфиг nginx
       - ../config/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      # Виртуальные хосты
-      - ../config/nginx/conf.d:/etc/nginx/conf.d:ro
+      # Виртуальные хосты (rw - для добавления новых сайтов)
+      - ../config/nginx/conf.d:/etc/nginx/conf.d:rw
       # Все сайты (web-root + логи)
       - ../sites:/var/www:rw
       # Сертификаты и webroot для Let's Encrypt

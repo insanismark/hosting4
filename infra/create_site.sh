@@ -75,6 +75,42 @@ check_infra() {
   fi
 }
 
+# Функция ожидания готовности контейнера
+wait_for_container() {
+  local container_name="$1"
+  local max_attempts=30
+  local attempt=1
+  
+  echo -n "    Ожидание запуска $container_name"
+  while [[ $attempt -le $max_attempts ]]; do
+    if docker ps --format '{{.Names}}' | grep -q "^${container_name}$"; then
+      echo " - ${GREEN}готово${NC}"
+      return 0
+    fi
+    echo -n "."
+    sleep 1
+    attempt=$((attempt + 1))
+  done
+  echo " - ${YELLOW}таймаут${NC}"
+  return 1
+}
+
+# Функция безопасного reload nginx
+reload_nginx() {
+  echo -e "${YELLOW}==> Перезагрузка конфигурации nginx...${NC}"
+  
+  # Проверяем конфиг перед reload
+  if ! docker exec hosting_nginx nginx -t 2>&1; then
+    echo -e "${RED}Ошибка: конфигурация nginx некорректна${NC}"
+    echo "Проверьте лог: docker exec hosting_nginx nginx -T"
+    return 1
+  fi
+  
+  # Используем reload вместо restart (graceful)
+  docker exec hosting_nginx nginx -s reload
+  echo -e "${GREEN}Nginx перезагружен${NC}"
+}
+
 echo -e "${BLUE}========================================"
 echo "  Создание нового сайта"
 echo -e "========================================${NC}"
@@ -207,47 +243,27 @@ echo -e "${YELLOW}==> Создание директорий...${NC}"
 mkdir -p "$SITE_DIR/www" "$SITE_DIR/logs"
 mkdir -p "$PHP_CONF_DIR"
 
-echo -e "${YELLOW}==> Копирование конфигов PHP-FPM и docker-compose из шаблонов...${NC}"
+# Создаём пустые файлы логов с правильными правами
+touch "$SITE_DIR/logs/access.log"
+touch "$SITE_DIR/logs/error.log"
+chmod 666 "$SITE_DIR/logs/access.log" "$SITE_DIR/logs/error.log"
+
+echo -e "${YELLOW}==> Копирование конфигов PHP-FPM из шаблонов...${NC}"
 cp "$ROOT_DIR/templates/php-fpm/php.ini" "$PHP_CONF_DIR/php.ini"
 cp "$ROOT_DIR/templates/php-fpm/www.conf" "$PHP_CONF_DIR/www.conf"
+
+echo -e "${YELLOW}==> Создание конфига nginx из шаблона...${NC}"
+# Копируем шаблон и заменяем плейсхолдеры
+cp "$ROOT_DIR/templates/nginx/site.conf.template" "$NGINX_VHOST"
+sed -i "s/{{DOMAIN}}/$SITE_DOMAIN/g" "$NGINX_VHOST"
+sed -i "s/{{CONTAINER_NAME}}/$SITE_CONTAINER_NAME/g" "$NGINX_VHOST"
+
+echo -e "${YELLOW}==> Создание docker-compose.yml для сайта...${NC}"
 cp "$ROOT_DIR/templates/site/docker-compose.yml" "$SITE_DIR/docker-compose.yml"
-
-echo -e "${YELLOW}==> Создание HTTP-only конфига nginx...${NC}"
-# Создаём HTTP-only конфиг (SSL добавим после получения сертификата)
-cat > "$NGINX_VHOST" << NGINX
-server {
-    listen 80;
-    server_name $SITE_DOMAIN;
-    root /var/www/$SITE_DOMAIN/www;
-    index index.php index.html;
-
-    # ACME-challenge для Let's Encrypt
-    location /.well-known/acme-challenge/ {
-        root /var/www/letsencrypt;
-    }
-
-    access_log /var/www/$SITE_DOMAIN/logs/access.log;
-    error_log /var/www/$SITE_DOMAIN/logs/error.log;
-
-    location / {
-        try_files \$uri \$uri/ /index.php?\$query_string;
-    }
-
-    location ~ \\.php\$ {
-        include fastcgi_params;
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
-        fastcgi_pass $SITE_CONTAINER_NAME:9000;
-    }
-}
-NGINX
-
-echo -e "${YELLOW}==> Настройка конфигов docker-compose...${NC}"
 # Заменяем плейсхолдеры в docker-compose.yml
 sed -i "s/{{DOMAIN}}/$SITE_DOMAIN/g" "$SITE_DIR/docker-compose.yml"
 sed -i "s/{{CONTAINER_NAME}}/$SITE_CONTAINER_NAME/g" "$SITE_DIR/docker-compose.yml"
 sed -i "s/{{PHP_VERSION}}/$PHP_VERSION/g" "$SITE_DIR/docker-compose.yml"
-# Заменяем версию PHP
-sed -i "s/php:8\.2-fpm/php:${PHP_VERSION}-fpm/g" "$SITE_DIR/docker-compose.yml"
 
 echo -e "${YELLOW}==> Создание приветственной страницы...${NC}"
 cat > "$SITE_DIR/www/index.php" << PHP
@@ -340,10 +356,11 @@ echo -e "${YELLOW}==> Запуск PHP-контейнера...${NC}"
 cd "$SITE_DIR"
 docker compose up -d
 
-echo -e "${YELLOW}==> Перезапуск nginx...${NC}"
-cd "$ROOT_DIR/infra"
-docker compose restart nginx
-NGINX_STATUS="${GREEN}Перезапущен${NC}"
+# Ждём запуска PHP-контейнера
+wait_for_container "$SITE_CONTAINER_NAME"
+
+# Перезагружаем конфигурацию nginx (graceful reload)
+reload_nginx
 
 # Создание SSH-пользователя
 echo -e "${YELLOW}==> Создание SSH-пользователя...${NC}"
@@ -409,7 +426,7 @@ else
 server {
    listen 80;
    server_name $SITE_DOMAIN;
-   root $SITE_DIR/www;
+   root /var/www/$SITE_DOMAIN/www;
    index index.php index.html;
 
    # ACME-challenge для Let's Encrypt
@@ -424,7 +441,8 @@ server {
 }
 
 server {
-   listen 443 ssl http2;
+   listen 443 ssl;
+   http2;
    server_name $SITE_DOMAIN;
 
    ssl_certificate /etc/letsencrypt/live/$SITE_DOMAIN/fullchain.pem;
@@ -432,11 +450,11 @@ server {
    ssl_protocols TLSv1.2 TLSv1.3;
    ssl_prefer_server_ciphers on;
 
-   root $SITE_DIR/www;
+   root /var/www/$SITE_DOMAIN/www;
    index index.php index.html;
 
-   access_log $SITE_DIR/logs/access.log;
-   error_log $SITE_DIR/logs/error.log;
+   access_log /var/www/$SITE_DOMAIN/logs/access.log;
+   error_log /var/www/$SITE_DOMAIN/logs/error.log;
 
    location / {
        try_files \$uri \$uri/ /index.php?\$query_string;
@@ -450,7 +468,7 @@ server {
 }
 NGINX
       
-      docker compose restart nginx
+      reload_nginx
       SSL_STATUS="${GREEN}Получен${NC}"
     else
       echo -e "${RED}Не удалось получить сертификат.${NC}"
@@ -492,7 +510,3 @@ echo "  $SITE_DIR/www/"
 echo
 echo -e "${YELLOW}URL сайта:${NC}"
 echo "  http://$SITE_DOMAIN/"
-if [[ "$SSL_STATUS" == "${GREEN}Получен${NC}" ]]; then
-  echo "  https://$SITE_DOMAIN/"
-fi
-echo
